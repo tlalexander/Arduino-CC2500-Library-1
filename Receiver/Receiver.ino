@@ -1,8 +1,10 @@
 #include <cc2500_REG.h>
 #include <cc2500_VAL.h>
-
-
 #include <SPI.h>
+// Definition of interrupt names
+#include < avr/io.h >
+// ISR interrupt service routine
+#include < avr/interrupt.h >
 
 #define CC2500_IDLE    0x36      // Exit RX / TX, turn
 #define CC2500_TX      0x35      // Enable TX. If in RX state, only enable TX if CCA passes
@@ -10,183 +12,225 @@
 #define CC2500_FTX     0x3B      // Flush the TX FIFO buffer. Only issue SFTX in IDLE or TXFIFO_UNDERFLOW states
 #define CC2500_FRX     0x3A      // Flush the RX FIFO buffer. Only issue SFRX in IDLE or RXFIFO_OVERFLOW states
 #define CC2500_TXFIFO  0x3F
-#define CC2500_RXFIFO  0x3F
+#define CC2500_RXFIFO  0xBF
+#define SRES           0x30
 
-#define No_of_Bytes    3
 
-const int buttonPin = 2;     // the number of the pushbutton pin
-int buttonState = 0;         // variable for reading the pushbutton status
 
-const int GDO0_PIN = 4;     // the number of the GDO0_PIN pin
-int GDO0_State = 0;         // variable for reading the pushbutton status
+
+const int GDO0_PIN = 9;     // the number of the GDO0_PIN pin
+int GDO0_State = 0;         
 int led = 5;
-void setup()
-{
-  Serial.begin(9600);
+int led_gnd = 4;
+
+int led_ext = 6;
+
+int ledValue = 20;
+
+volatile int looponce=LOW;
+
+
+
+
+
+void setup() {
+ 
+
+ 
+  
   pinMode(SS,OUTPUT);
+  pinMode(led_gnd, OUTPUT);
   pinMode(led, OUTPUT);
-  digitalWrite(led, HIGH);
+  pinMode(led_ext, OUTPUT);
+  analogWrite(led,ledValue);
+  analogWrite(led_ext,ledValue);
+  digitalWrite(led_gnd, LOW);
+  
+  Serial.begin(9600);
+
   SPI.begin();
   digitalWrite(SS,HIGH);
   // initialize the pushbutton pin as an input:
-  pinMode(buttonPin, INPUT);     
-  pinMode(GDO0_PIN, INPUT);     
+ // pinMode(buttonPin, INPUT);     
+ // pinMode(GDO0_PIN, INPUT);     
+  
+  attachInterrupt(0, loopnow, RISING);
 
   Serial.println("Starting..");
   init_CC2500();
-  Read_Config_Regs();
+  //Read_Config_Regs();
 }
 
 void loop()
 {
-  //Read_Config_Regs();
-  /*
-//  To start transmission
-    buttonState = digitalRead(buttonPin);
-    Serial.println(buttonState);
+  
+  //change this back to calling RxData_RF(); and no interrupt calls.
+  RxData_RF();
 
-    while (!buttonState)
-    {
-        // read the state of the pushbutton value:
-        buttonState = digitalRead(buttonPin);
-        Serial.println("PB = 0");
-    }
-    
-    Serial.println("BP = 1");
-    */
-    RxData_RF();
-  /*
-    while (buttonState)
-    {
-        // read the state of the pushbutton value:
-        buttonState = digitalRead(buttonPin);
-        Serial.println("PB = 1");
-    }
-    */
+  if(looponce==HIGH)
+  {
+  RxData_RF();
+  looponce=LOW;  
+  }
+   
+
+}
+
+void loopnow()
+{
+ looponce=HIGH; 
 }
 
 
 void RxData_RF(void) 
 {
-  
-  
-    int PacketLength;
-   // RX: enable RX
-    SendStrobe(CC2500_RX);
 
-    GDO0_State = digitalRead(GDO0_PIN);
-//    Serial.println("GDO0");
-//    Serial.println(GDO0_State);
+  
+  int PacketLength=0;
+  // RX: enable RX
+  SendStrobe(CC2500_RX);
+  byte state = SendStrobe(00);
+  //Serial.println(state,HEX);
+   
+   if(state>>0x4==1) //mode is RX mode
+   {
+     int count=0;
+     // Wait for GDO0 to be set -> sync transmitted
+      while (!GDO0_State)
+      {
+          // read the state of the GDO0_PIN value:
+          GDO0_State = digitalRead(GDO0_PIN);
+          delay(1);
+          count++;
+          
+          if(count>1000) {
+            flushRX();
+           //  Serial.println("ERR NO DATA"); 
+            return;
+          }
+       }
+       
+       // Wait for GDO0 to be cleared -> end of packet
+       while (GDO0_State)
+       {
+           // read the state of the GDO0_PIN value:
+           GDO0_State = digitalRead(GDO0_PIN);
+       }
+       
+      // state = SendStrobe(00);
+       
+    // Serial.println("Reading Bytes"); 
+     int data;
+     int i=0;
+    // Read data from RX FIFO and store in rxBuffer
+    while((state & 0xF) > 0)
+    {    
     
-    // Wait for GDO0 to be set -> sync received
-    while (!GDO0_State)
-    {
-        // read the state of the GDO0_PIN value:
-        GDO0_State = digitalRead(GDO0_PIN);
-        //Serial.println("GD0 = 0");
-        delay(100);
+      digitalWrite(SS,LOW);
+      while (digitalRead(MISO) == HIGH) {
+      };
+      state = SPI.transfer(CC2500_RXFIFO);
+      delay(1);
+      unsigned char data = SPI.transfer(0);
+      digitalWrite(SS,HIGH);
+      
+      Serial.println(data, DEC);
+      if(i==0)
+      {
+        if(data<10) data=0;
+        ledValue = data;
+        analogWrite(led,ledValue);
+        analogWrite(led_ext,ledValue);
+      }
+      
+     if((state >> 4) > 1)
+     {
+      flushRX();
+      Serial.print("ERR STATE = "); 
+     Serial.println(state >> 4);  //prints state
+     return; 
+     }
+    i++;
+    
     }
-    // Wait for GDO0 to be cleared -> end of packet
-    while (GDO0_State)
-    {
-      // read the state of the GDO0_PIN value:
-      GDO0_State = digitalRead(GDO0_PIN);
-        //Serial.println("GD0 = 1");
-        delay(100);
-    }
+    Serial.println();
+   // Serial.println(state,HEX);
+   //  delay(1000);
     
-    /*
-    char rxbytes = ReadReg(0x3B);
-        Serial.println("---------------------");
-        Serial.println("RX Bytes: ");
-        Serial.println(rxbytes, HEX);
-        Serial.println("---------------------");
-    */
-    
-    char data1, data2;
-  // Read length byte
-        PacketLength = ReadReg(CC2500_RXFIFO);
-        
-        Serial.println("---------------------");
-          Serial.println(PacketLength,HEX);
-          Serial.println(" Packet Received ");
-          
-        if(No_of_Bytes == PacketLength)
-        {
-          
-          
-          // Read data from RX FIFO and store in rxBuffer
-          
-          //for(int i = 1; i < PacketLength; i++)
-          //{            
-            data1 = ReadReg(CC2500_RXFIFO);
-            Serial.println(data1,HEX);
-            if(data1 = 0x09){
-                data2 = ReadReg(CC2500_RXFIFO);
-                Serial.println(data2,HEX);
-                if(data2 == 0x01 ){
-                    //digitalWrite(led, LOW);
-                }
-                else{
-                    //digitalWrite(led, HIGH);
-                }
-            }
-            //Serial.println(ReadReg(CC2500_RXFIFO), HEX);
-          //}
-          Serial.println("---------------------");
-        }
-         
-        // Make sure that the radio is in IDLE state before flushing the FIFO
-        // (Unless RXOFF_MODE has been changed, the radio should be in IDLE state at this point) 
-        SendStrobe(CC2500_IDLE);
-        // Flush RX FIFO
-        SendStrobe(CC2500_FRX);
+   // Serial.println();
+ 
+   // flushRX();
+  
+   }else
+   {
+    Serial.println("ERR RX MODE NOT ENABLED");  
+   }
 
 }// Rf RxPacket
 
+void flushRX()
+{
+    // Make sure that the radio is in IDLE state before flushing the FIFO
+  // (Unless RXOFF_MODE has been changed, the radio should be in IDLE state at this point)
+   delay(10); 
+   SendStrobe(CC2500_IDLE);
+   delay(10);
+   // Flush RX FIFO
+   SendStrobe(CC2500_FRX); 
+   delay(10); 
+}
 
 void WriteReg(char addr, char value)
 {
   digitalWrite(SS,LOW);
-  
+
   while (digitalRead(MISO) == HIGH) {
-    };
-    
+  };
+
   SPI.transfer(addr);
-  delay(10);
+  delay(1);
   SPI.transfer(value);
   digitalWrite(SS,HIGH);
 }
 
 char ReadReg(char addr)
 {
-  addr = addr + 0x80;
+  byte stat=0xFF;
+  return ReadReg(addr, stat);
+}
+
+char ReadReg(char addr, byte &stat)
+{
+  
+  addr = addr | 0x80;
   digitalWrite(SS,LOW);
   while (digitalRead(MISO) == HIGH) {
-    };
-  char x = SPI.transfer(addr);
-  delay(10);
-  char y = SPI.transfer(0);
+  };
+  byte tmp = SPI.transfer(addr);
+  if(stat!=0xFF) stat = tmp;
+  delay(1);
+  char data = SPI.transfer(0);
   digitalWrite(SS,HIGH);
-  return y;  
+  return data;  
 }
 
 char SendStrobe(char strobe)
 {
   digitalWrite(SS,LOW);
-  
+
   while (digitalRead(MISO) == HIGH) {
-    };
-    
+  };
+
   char result =  SPI.transfer(strobe);
   digitalWrite(SS,HIGH);
-  delay(10);
+  delay(1);
   return result;
 }
 
 
 void init_CC2500()
 {
+  SendStrobe(SRES);
   WriteReg(REG_IOCFG2,VAL_IOCFG2);
   WriteReg(REG_IOCFG1,VAL_IOCFG1);
   WriteReg(REG_IOCFG0,VAL_IOCFG0);
@@ -236,151 +280,152 @@ void init_CC2500()
   WriteReg(REG_TEST2,VAL_TEST2);
   WriteReg(REG_TEST1,VAL_TEST1);
   WriteReg(REG_TEST0,VAL_TEST0);
-/*  
-  WriteReg(REG_PARTNUM,VAL_PARTNUM);
-  WriteReg(REG_VERSION,VAL_VERSION);
-  WriteReg(REG_FREQEST,VAL_FREQEST);
-  WriteReg(REG_LQI,VAL_LQI);
-  WriteReg(REG_RSSI,VAL_RSSI);
-  WriteReg(REG_MARCSTATE,VAL_MARCSTATE);
-  WriteReg(REG_WORTIME1,VAL_WORTIME1);
-  WriteReg(REG_WORTIME0,VAL_WORTIME0);
-  WriteReg(REG_PKTSTATUS,VAL_PKTSTATUS);
-  WriteReg(REG_VCO_VC_DAC,VAL_VCO_VC_DAC);
-  WriteReg(REG_TXBYTES,VAL_TXBYTES);
-  WriteReg(REG_RXBYTES,VAL_RXBYTES);
-  WriteReg(REG_RCCTRL1_STATUS,VAL_RCCTRL1_STATUS);
-  WriteReg(REG_RCCTRL0_STATUS,VAL_RCCTRL0_STATUS);
-  */
+  /*  
+   WriteReg(REG_PARTNUM,VAL_PARTNUM);
+   WriteReg(REG_VERSION,VAL_VERSION);
+   WriteReg(REG_FREQEST,VAL_FREQEST);
+   WriteReg(REG_LQI,VAL_LQI);
+   WriteReg(REG_RSSI,VAL_RSSI);
+   WriteReg(REG_MARCSTATE,VAL_MARCSTATE);
+   WriteReg(REG_WORTIME1,VAL_WORTIME1);
+   WriteReg(REG_WORTIME0,VAL_WORTIME0);
+   WriteReg(REG_PKTSTATUS,VAL_PKTSTATUS);
+   WriteReg(REG_VCO_VC_DAC,VAL_VCO_VC_DAC);
+   WriteReg(REG_TXBYTES,VAL_TXBYTES);
+   WriteReg(REG_RXBYTES,VAL_RXBYTES);
+   WriteReg(REG_RCCTRL1_STATUS,VAL_RCCTRL1_STATUS);
+   WriteReg(REG_RCCTRL0_STATUS,VAL_RCCTRL0_STATUS);
+   */
 }
 
 void Read_Config_Regs(void)
 { 
   Serial.println("Configuration registers");
   Serial.println(ReadReg(REG_IOCFG2),HEX);
-   delay(1000);
+  delay(1000);
   Serial.println(ReadReg(REG_IOCFG1),HEX);
-   delay(1000);
+  delay(1000);
   Serial.println(ReadReg(REG_IOCFG0),HEX);
+  delay(1000);
+  /* Serial.println(ReadReg(REG_FIFOTHR),HEX);
    delay(1000);
-/* Serial.println(ReadReg(REG_FIFOTHR),HEX);
+   Serial.println(ReadReg(REG_SYNC1),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_SYNC1),HEX);
+   Serial.println(ReadReg(REG_SYNC0),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_SYNC0),HEX);
+   Serial.println(ReadReg(REG_PKTLEN),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_PKTLEN),HEX);
+   Serial.println(ReadReg(REG_PKTCTRL1),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_PKTCTRL1),HEX);
+   Serial.println(ReadReg(REG_PKTCTRL0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_ADDR),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_CHANNR),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FSCTRL1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FSCTRL0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FREQ2),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FREQ1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FREQ0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_MDMCFG4),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_MDMCFG3),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_MDMCFG2),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_MDMCFG1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_MDMCFG0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_DEVIATN),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_MCSM2),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_MCSM1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_MCSM0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FOCCFG),HEX);
+   delay(10);
+   
+   Serial.println(ReadReg(REG_BSCFG),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_AGCCTRL2),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_AGCCTRL1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_AGCCTRL0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_WOREVT1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_WOREVT0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_WORCTRL),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FREND1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FREND0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FSCAL3),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FSCAL2),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FSCAL1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FSCAL0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_RCCTRL1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_RCCTRL0),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_FSTEST),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_PTEST),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_AGCTEST),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_TEST2),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_TEST1),HEX);
+   delay(10);
+   Serial.println(ReadReg(REG_TEST0),HEX);
+   delay(10);
+  /*
+   Serial.println(ReadReg(REG_PARTNUM),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_PKTCTRL0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_ADDR),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_CHANNR),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FSCTRL1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FSCTRL0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FREQ2),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FREQ1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FREQ0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_MDMCFG4),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_MDMCFG3),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_MDMCFG2),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_MDMCFG1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_MDMCFG0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_DEVIATN),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_MCSM2),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_MCSM1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_MCSM0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FOCCFG),HEX);
-   delay(10);
-
-  Serial.println(ReadReg(REG_BSCFG),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_AGCCTRL2),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_AGCCTRL1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_AGCCTRL0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_WOREVT1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_WOREVT0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_WORCTRL),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FREND1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FREND0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FSCAL3),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FSCAL2),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FSCAL1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FSCAL0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_RCCTRL1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_RCCTRL0),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_FSTEST),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_PTEST),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_AGCTEST),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_TEST2),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_TEST1),HEX);
-   delay(10);
-  Serial.println(ReadReg(REG_TEST0),HEX);
-   delay(10);
- /*
-  Serial.println(ReadReg(REG_PARTNUM),HEX);
+   Serial.println(ReadReg(REG_VERSION),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_VERSION),HEX);
+   Serial.println(ReadReg(REG_FREQEST),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_FREQEST),HEX);
+   Serial.println(ReadReg(REG_LQI),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_LQI),HEX);
+   Serial.println(ReadReg(REG_RSSI),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_RSSI),HEX);
+   Serial.println(ReadReg(REG_MARCSTATE),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_MARCSTATE),HEX);
+   Serial.println(ReadReg(REG_WORTIME1),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_WORTIME1),HEX);
+   Serial.println(ReadReg(REG_WORTIME0),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_WORTIME0),HEX);
+   Serial.println(ReadReg(REG_PKTSTATUS),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_PKTSTATUS),HEX);
+   Serial.println(ReadReg(REG_VCO_VC_DAC),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_VCO_VC_DAC),HEX);
+   Serial.println(ReadReg(REG_TXBYTES),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_TXBYTES),HEX);
+   Serial.println(ReadReg(REG_RXBYTES),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_RXBYTES),HEX);
+   Serial.println(ReadReg(REG_RCCTRL1_STATUS),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_RCCTRL1_STATUS),HEX);
+   Serial.println(ReadReg(REG_RCCTRL0_STATUS),HEX);
    delay(1000);
-  Serial.println(ReadReg(REG_RCCTRL0_STATUS),HEX);
-   delay(1000);
-*/  
+   */
 }
+
 

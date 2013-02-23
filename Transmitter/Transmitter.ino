@@ -1,7 +1,9 @@
 #include <cc2500_REG.h>
 #include <cc2500_VAL.h>
+#include <stdlib.h>	// for itoa() call
 
 #include <SPI.h>
+#include <string>
 
 #define CC2500_IDLE    0x36      // Exit RX / TX, turn
 #define CC2500_TX      0x35      // Enable TX. If in RX state, only enable TX if CCA passes
@@ -9,15 +11,26 @@
 #define CC2500_FTX     0x3B      // Flush the TX FIFO buffer. Only issue SFTX in IDLE or TXFIFO_UNDERFLOW states
 #define CC2500_FRX     0x3A      // Flush the RX FIFO buffer. Only issue SFRX in IDLE or RXFIFO_OVERFLOW states
 #define CC2500_TXFIFO  0x3F
-#define CC2500_RXFIFO  0x3F
+#define CC2500_RXFIFO  0xBF
 
-#define No_of_Bytes    3
 
+const int buttonHighPin = 3;
+const int buttonLowPin = 5;
 const int buttonPin = 2;     // the number of the pushbutton pin
 int buttonState = 0;         // variable for reading the pushbutton status
 
-const int GDO0_PIN = 4;     // the number of the GDO0_PIN pin
+const int GDO0_PIN = 9;     // the number of the GDO0_PIN pin
 int GDO0_State = 0;         // variable for reading the pushbutton status
+
+int incomingByte = 0;   // for incoming serial data
+unsigned char txData[50];
+
+int sensorPin = A0; 
+int sensorValue = 0; 
+
+int led = 6;
+int led_gnd = 7;
+int ledValue = 0;
 
 void setup()
 {
@@ -25,13 +38,27 @@ void setup()
   pinMode(SS,OUTPUT);
   SPI.begin();
   digitalWrite(SS,HIGH);
+  
+    pinMode(led_gnd, OUTPUT);
+  pinMode(led, OUTPUT);
+  analogWrite(led,ledValue);
+  digitalWrite(led_gnd, LOW);
+  
+  pinMode(buttonLowPin, OUTPUT);
+  digitalWrite(buttonLowPin, LOW);
+  
+  pinMode(buttonHighPin, OUTPUT);
+  digitalWrite(buttonHighPin, HIGH);
+  
   // initialize the pushbutton pin as an input:
   pinMode(buttonPin, INPUT);     
   pinMode(GDO0_PIN, INPUT);     
 
   Serial.println("Starting..");
   init_CC2500();
-  Read_Config_Regs();
+ // Read_Config_Regs();
+  
+  // TxData_RF(No_of_Bytes);    //  Transmit No_of_Bytes-1
 }
 
 void loop()
@@ -39,60 +66,68 @@ void loop()
     
     
     buttonState = digitalRead(buttonPin);
-    //Serial.println(buttonState);
+     sensorValue = analogRead(sensorPin) >> 2;  
+     analogWrite(led,sensorValue);
+     
     
 //  To start transmission
-    while (buttonState)
-      {
+   // while (buttonState)
+   //   {
         // read the state of the pushbutton value:
         buttonState = digitalRead(buttonPin);
-        Serial.println("Transmission to start");
+         Serial.println();
         delay(10);
-        TxData_RF(No_of_Bytes);    //  Transmit No_of_Bytes-1
-        Serial.println("Transmission is over");
-        delay(10);
-      }
+        char buf[5];
+        char data[50] = "Hello User. Sensor value is -";
+         strcat(data, itoa(sensorValue, buf, 10));
+         strcat(data, "-");
+        TxData_RF((byte)sensorValue);    //  Transmit data value
+         Serial.println((byte)sensorValue);
+        delay(100);
+   //   }
           
-     /* 
-    while (buttonState)
-      {
-      // read the state of the pushbutton value:
-      buttonState = digitalRead(buttonPin);
-      Serial.println("PB = 1");
-      }
-      */
 }
 
+void TxData_RF(String data)
+{
+   unsigned char string_data[data.length()];
+   for(int i=0;i<data.length();i++)
+   {
+     string_data[i]=data[i];
+   }
+  TxData_RF(string_data, data.length());
+}
+
+void TxData_RF(byte data)
+{
+  byte newdata[1];
+  newdata[0]=data;
+  TxData_RF(newdata, 1);
+}
+
+
 //  Send slide strobe
-void TxData_RF( unsigned char length)
+void TxData_RF( unsigned char data[], int length)
 {
       // Make sure that the radio is in IDLE state before flushing the FIFO
       SendStrobe(CC2500_IDLE);
       // Flush TX FIFO
       SendStrobe(CC2500_FTX);
 
-      // prepare Packet
-      unsigned char packet[length];
-      // First Byte = Length Of Packet
-      packet[0] = length;
-      packet[1] = 0x09;
-      packet[2] = 0x01;
-      /*
-      for(int i = 1; i < length; i++)
-      {	        	
-          packet[i] = i;
-      }
-      
-      */
-      
+  
       // SIDLE: exit RX/TX
       SendStrobe(CC2500_IDLE);
+       Serial.print("Transmitting: ");
+        Serial.write(data, length);
+        Serial.println();
       
+      //first byte is data length for variable packet length mode
+      WriteReg(CC2500_TXFIFO, length);
+      
+      //load up the rest of the bytes
       for(int i = 0; i < length; i++)
       {	  
-          Serial.println("Transmitting ");
-          Serial.println(packet[i],HEX);
-          WriteReg(CC2500_TXFIFO,packet[i]);
+          WriteReg(CC2500_TXFIFO, data[i]);
       }
       // STX: enable TX
       SendStrobe(CC2500_TX);
